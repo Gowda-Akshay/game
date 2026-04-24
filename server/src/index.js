@@ -10,10 +10,27 @@ dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 5001;
+const allowedOrigins = (process.env.CLIENT_URL || "http://localhost:5173")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
 
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || "http://localhost:5173"
+    origin(origin, callback) {
+      if (!origin) {
+        return callback(null, true);
+      }
+
+      if (
+        allowedOrigins.includes(origin) ||
+        /^https:\/\/game-client(?:-[a-z0-9]+)?\.onrender\.com$/i.test(origin)
+      ) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("Origin not allowed by CORS"));
+    }
   })
 );
 app.use(express.json());

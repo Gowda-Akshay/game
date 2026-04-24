@@ -1,7 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import QRCode from "qrcode";
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5001";
+const getApiBaseUrl = () => {
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL;
+  }
+
+  if (typeof window !== "undefined" && window.location.hostname.endsWith(".onrender.com")) {
+    return "https://game-api-4bdo.onrender.com";
+  }
+
+  return "http://localhost:5001";
+};
+
+const API_BASE_URL = getApiBaseUrl();
 const STORAGE_KEY = "gaming-zone-session";
 const initialCustomerForm = {
   customerName: "",
