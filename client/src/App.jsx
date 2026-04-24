@@ -2,12 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import QRCode from "qrcode";
 
 const getApiBaseUrl = () => {
-  if (import.meta.env.VITE_API_URL) {
-    return import.meta.env.VITE_API_URL;
-  }
-
   if (typeof window !== "undefined" && window.location.hostname.endsWith(".onrender.com")) {
     return "https://game-api-4bdo.onrender.com";
+  }
+
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL;
   }
 
   return "http://localhost:5001";
