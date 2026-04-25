@@ -4,7 +4,9 @@ import cors from "cors";
 import { connectDatabase } from "./config/db.js";
 import authRoutes from "./routes/auth.js";
 import customerRoutes from "./routes/customers.js";
+import notificationRoutes from "./routes/notifications.js";
 import { ensureAdminUser } from "./seed/adminUser.js";
+import { startTimesUpNotifier } from "./jobs/timesUpNotifier.js";
 
 dotenv.config();
 
@@ -41,12 +43,14 @@ app.get("/api/health", (_req, res) => {
 
 app.use("/api/auth", authRoutes);
 app.use("/api/customers", customerRoutes);
+app.use("/api/notifications", notificationRoutes);
 
 const startServer = async () => {
   try {
     await connectDatabase();
     const adminUser = await ensureAdminUser();
     console.log(`Admin login ready for ${adminUser.gamerTag}`);
+    startTimesUpNotifier();
     app.listen(port, () => {
       console.log(`Server running on http://localhost:${port}`);
     });

@@ -21,6 +21,30 @@ const sessionSchema = new mongoose.Schema(
     isActive: {
       type: Boolean,
       default: true
+    },
+    userAgent: {
+      type: String,
+      default: ""
+    },
+    browser: {
+      type: String,
+      default: ""
+    },
+    os: {
+      type: String,
+      default: ""
+    },
+    deviceType: {
+      type: String,
+      default: ""
+    },
+    ipAddress: {
+      type: String,
+      default: ""
+    },
+    fcmToken: {
+      type: String,
+      default: ""
     }
   },
   {
@@ -49,23 +73,11 @@ const userSchema = new mongoose.Schema(
       default: []
     },
     activeEntryScanner: {
-      tokenId: {
-        type: String,
-        default: ""
-      },
-      token: {
-        type: String,
-        default: ""
-      },
-      expiresAt: {
-        type: Date,
-        default: null
-      },
-      isActive: {
-        type: Boolean,
-        default: false
-      }
-    }
+      tokenId: { type: String, default: "" },
+      token:   { type: String, default: "" },
+      expiresAt: { type: Date, default: null },
+      isActive: { type: Boolean, default: false }
+    },
   },
   {
     timestamps: true

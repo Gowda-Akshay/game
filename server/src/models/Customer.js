@@ -22,6 +22,29 @@ const customerSchema = new mongoose.Schema(
       trim: true,
       default: ""
     },
+    photoFit: {
+      type: String,
+      enum: ["cover", "contain"],
+      default: "cover"
+    },
+    photoPositionX: {
+      type: Number,
+      default: 50,
+      min: 0,
+      max: 100
+    },
+    photoPositionY: {
+      type: Number,
+      default: 50,
+      min: 0,
+      max: 100
+    },
+    photoZoom: {
+      type: Number,
+      default: 1,
+      min: 1,
+      max: 2.5
+    },
     pendingHours: {
       type: Number,
       required: true,
@@ -59,6 +82,10 @@ const customerSchema = new mongoose.Schema(
       required: true,
       min: 0,
       default: 0
+    },
+    timesUpNotifiedAt: {
+      type: Date,
+      default: null
     }
   },
   {

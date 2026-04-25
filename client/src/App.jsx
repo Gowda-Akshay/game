@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
+import * as XLSX from "xlsx";
+import { requestFcmToken, onForegroundMessage } from "./firebase.js";
 
 const getApiBaseUrl = () => {
   if (typeof window !== "undefined" && window.location.hostname.endsWith(".onrender.com")) {
@@ -20,6 +22,10 @@ const initialCustomerForm = {
   phoneNumber: "",
   email: "",
   photoUrl: "",
+  photoFit: "cover",
+  photoPositionX: 50,
+  photoPositionY: 50,
+  photoZoom: 1,
   pendingHours: "",
   pendingMinutes: "",
   hourlyRate: "100"
@@ -32,8 +38,19 @@ const initialPhoneCustomerForm = {
   customerName: "",
   phoneNumber: "",
   photoUrl: "",
+  photoFit: "cover",
+  photoPositionX: 50,
+  photoPositionY: 50,
+  photoZoom: 1,
   pendingHours: "",
   pendingMinutes: ""
+};
+const initialCustomerSummary = {
+  totalCustomers: 0,
+  totalPendingAmount: 0,
+  totalPendingMinutes: 0,
+  totalPendingHours: 0,
+  customersWithEmail: 0
 };
 
 const readFileAsDataUrl = (file) =>
@@ -44,19 +61,57 @@ const readFileAsDataUrl = (file) =>
     reader.readAsDataURL(file);
   });
 
+const getCustomerInitials = (customerName = "") => {
+  const cleanedName = customerName.trim();
+
+  if (!cleanedName) {
+    return "NA";
+  }
+
+  const parts = cleanedName.split(/\s+/).filter(Boolean);
+
+  if (parts.length === 1) {
+    return parts[0].slice(0, 2).toUpperCase();
+  }
+
+  return `${parts[0][0] || ""}${parts[1][0] || ""}`.toUpperCase();
+};
+
+const getPhotoStyle = (photoFit, photoPositionX, photoPositionY, photoZoom) => {
+  const offsetX = ((photoPositionX ?? 50) - 50) * 0.8;
+  const offsetY = ((photoPositionY ?? 50) - 50) * 0.8;
+
+  return {
+    objectPosition: "center center",
+    transform: `translate(${offsetX}%, ${offsetY}%) scale(${photoZoom ?? 1})`,
+    transformOrigin: "center"
+  };
+};
+
 function App() {
   const pageSize = 20;
   const entryToken = useMemo(() => new URLSearchParams(window.location.search).get("entryToken") || "", []);
   const [currentView, setCurrentView] = useState("home");
+  const [notifications, setNotifications] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [formData, setFormData] = useState({
     gamerTag: "",
     password: ""
   });
   const [customerForm, setCustomerForm] = useState(initialCustomerForm);
+  const [editingCustomerId, setEditingCustomerId] = useState("");
   const [customers, setCustomers] = useState([]);
+  const [customerSummary, setCustomerSummary] = useState(initialCustomerSummary);
+  const [customerMeta, setCustomerMeta] = useState({
+    page: 1,
+    totalPages: 1,
+    totalCount: 0
+  });
   const [customerFilter, setCustomerFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [startDateFilter, setStartDateFilter] = useState("");
+  const [endDateFilter, setEndDateFilter] = useState("");
   const [authToken, setAuthToken] = useState("");
   const [adminName, setAdminName] = useState("");
   const [systemName, setSystemName] = useState("Gaming Zone");
@@ -72,6 +127,7 @@ function App() {
   const [customerLoading, setCustomerLoading] = useState(false);
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [passwordLoading, setPasswordLoading] = useState(false);
+
   const [bootstrapping, setBootstrapping] = useState(true);
   const [timeTick, setTimeTick] = useState(Date.now());
   const [entryTokenData, setEntryTokenData] = useState(null);
@@ -87,6 +143,11 @@ function App() {
   const [publicLoading, setPublicLoading] = useState(false);
   const [publicEntryData, setPublicEntryData] = useState(null);
   const [publicEntryLoading, setPublicEntryLoading] = useState(Boolean(entryToken));
+  const [publicCameraOpen, setPublicCameraOpen] = useState(false);
+  const [publicCameraLoading, setPublicCameraLoading] = useState(false);
+  const [photoAdjustTarget, setPhotoAdjustTarget] = useState("");
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
 
   const handleChange = (event) => {
     const { name, value } = event.target;
@@ -131,7 +192,11 @@ function App() {
       const photoUrl = await readFileAsDataUrl(file);
       setPublicForm((current) => ({
         ...current,
-        photoUrl
+        photoUrl,
+        photoFit: "cover",
+        photoPositionX: 50,
+        photoPositionY: 50,
+        photoZoom: 1
       }));
     } catch (error) {
       setPublicStatus({
@@ -139,6 +204,90 @@ function App() {
         message: error.message
       });
     }
+  };
+
+  const stopPublicCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+
+    setPublicCameraOpen(false);
+  };
+
+  const openPublicCamera = async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setPublicStatus({
+        type: "error",
+        message: "Camera is not supported on this browser."
+      });
+      return;
+    }
+
+    try {
+      setPublicCameraLoading(true);
+      setPublicStatus({
+        type: "",
+        message: ""
+      });
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user" },
+        audio: false
+      });
+
+      streamRef.current = stream;
+      setPublicCameraOpen(true);
+
+      window.setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.play().catch(() => {});
+        }
+      }, 0);
+    } catch (error) {
+      setPublicStatus({
+        type: "error",
+        message: "Unable to open front camera."
+      });
+    } finally {
+      setPublicCameraLoading(false);
+    }
+  };
+
+  const capturePublicPhoto = () => {
+    if (!videoRef.current) {
+      return;
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = videoRef.current.videoWidth || 720;
+    canvas.height = videoRef.current.videoHeight || 960;
+    const context = canvas.getContext("2d");
+
+    if (!context) {
+      setPublicStatus({
+        type: "error",
+        message: "Unable to capture image."
+      });
+      return;
+    }
+
+    context.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+    const photoUrl = canvas.toDataURL("image/jpeg", 0.92);
+    setPublicForm((current) => ({
+      ...current,
+      photoUrl,
+      photoFit: "cover",
+      photoPositionX: 50,
+      photoPositionY: 50,
+      photoZoom: 1
+    }));
+    stopPublicCamera();
   };
 
   const handleCustomerPhotoChange = async (event) => {
@@ -152,7 +301,11 @@ function App() {
       const photoUrl = await readFileAsDataUrl(file);
       setCustomerForm((current) => ({
         ...current,
-        photoUrl
+        photoUrl,
+        photoFit: "cover",
+        photoPositionX: 50,
+        photoPositionY: 50,
+        photoZoom: 1
       }));
     } catch (error) {
       setStatus({
@@ -160,6 +313,60 @@ function App() {
         message: error.message
       });
     }
+  };
+
+  const handleClearPublicPhoto = () => {
+    setPublicForm((current) => ({
+      ...current,
+      photoUrl: "",
+      photoFit: "cover",
+      photoPositionX: 50,
+      photoPositionY: 50,
+      photoZoom: 1
+    }));
+  };
+
+  const handleClearCustomerPhoto = () => {
+    setCustomerForm((current) => ({
+      ...current,
+      photoUrl: "",
+      photoFit: "cover",
+      photoPositionX: 50,
+      photoPositionY: 50,
+      photoZoom: 1
+    }));
+  };
+
+  const handlePublicPhotoFitChange = (photoFit) => {
+    setPublicForm((current) => ({
+      ...current,
+      photoFit
+    }));
+  };
+
+  const handleCustomerPhotoFitChange = (photoFit) => {
+    setCustomerForm((current) => ({
+      ...current,
+      photoFit
+    }));
+  };
+
+  const handlePublicPhotoAdjust = (field, value) => {
+    setPublicForm((current) => ({
+      ...current,
+      [field]: Number(value)
+    }));
+  };
+
+  const handleCustomerPhotoAdjust = (field, value) => {
+    setCustomerForm((current) => ({
+      ...current,
+      [field]: Number(value)
+    }));
+  };
+
+  const closePhotoAdjustModal = () => {
+    setPhotoAdjustTarget("");
   };
 
   const logout = (message = "Session ended.") => {
@@ -181,6 +388,7 @@ function App() {
     const bookedTotalMinutes = customer.totalBookedMinutes || customer.totalPendingMinutes || 0;
     const bookedHours = Math.floor(bookedTotalMinutes / 60);
     const bookedMinutes = bookedTotalMinutes % 60;
+    const progressPercent = bookedTotalMinutes > 0 ? 0 : 0;
 
     if (!customer.sessionStartedAt || !bookedTotalMinutes) {
       return {
@@ -190,7 +398,8 @@ function App() {
         remainingHours: bookedHours,
         remainingMinutes: bookedMinutes,
         remainingTotalMinutes: bookedTotalMinutes,
-        sessionExpired: false
+        sessionExpired: false,
+        progressPercent
       };
     }
 
@@ -206,6 +415,8 @@ function App() {
 
     const elapsedMinutes = Math.max(0, Math.floor((timeTick - startedAtTime) / 60000));
     const remainingMinutes = Math.max(0, bookedTotalMinutes - elapsedMinutes);
+    const activeProgressPercent =
+      bookedTotalMinutes > 0 ? Math.min(100, Math.max(0, (elapsedMinutes / bookedTotalMinutes) * 100)) : 0;
 
     return {
       ...customer,
@@ -215,41 +426,14 @@ function App() {
       remainingMinutes: remainingMinutes % 60,
       remainingTotalMinutes: remainingMinutes,
       sessionActive: remainingMinutes > 0,
-      sessionExpired: remainingMinutes === 0
+      sessionExpired: remainingMinutes === 0,
+      progressPercent: remainingMinutes === 0 ? 100 : activeProgressPercent
     };
   };
 
   const liveCustomers = customers.map(getLiveCustomer);
-
-  const filteredCustomers = liveCustomers.filter((customer) => {
-    const query = customerFilter.trim().toLowerCase();
-    const matchesSearch =
-      !query ||
-      [customer.customerName, customer.phoneNumber, customer.email]
-        .filter(Boolean)
-        .some((value) => value.toLowerCase().includes(query));
-
-    if (!matchesSearch) {
-      return false;
-    }
-
-    if (statusFilter === "with-email") {
-      return Boolean(customer.email);
-    }
-
-    if (statusFilter === "high-pending") {
-      return customer.pendingCost >= 100;
-    }
-
-    return true;
-  });
-
-  const totalPages = Math.max(1, Math.ceil(filteredCustomers.length / pageSize));
+  const totalPages = Math.max(1, customerMeta.totalPages || 1);
   const safeCurrentPage = Math.min(currentPage, totalPages);
-  const paginatedCustomers = filteredCustomers.slice(
-    (safeCurrentPage - 1) * pageSize,
-    safeCurrentPage * pageSize
-  );
   const paginationWindowStart = Math.max(1, safeCurrentPage - 1);
   const paginationWindowEnd = Math.min(totalPages, paginationWindowStart + 2);
   const pageNumbers = Array.from(
@@ -257,13 +441,8 @@ function App() {
     (_, index) => paginationWindowStart + index
   );
 
-  const totalPendingAmount = liveCustomers.reduce((sum, customer) => sum + customer.pendingCost, 0);
-  const totalPendingMinutes = liveCustomers.reduce(
-    (sum, customer) => sum + (customer.remainingTotalMinutes ?? customer.totalPendingMinutes ?? 0),
-    0
-  );
-  const totalPendingHours = (totalPendingMinutes / 60).toFixed(1);
-  const customersWithEmail = liveCustomers.filter((customer) => customer.email).length;
+  const totalPendingAmount = customerSummary.totalPendingAmount || 0;
+  const totalPendingHours = Number(customerSummary.totalPendingHours || 0).toFixed(1);
 
   const formatDateTime = (value) => {
     if (!value) {
@@ -273,8 +452,37 @@ function App() {
     return new Date(value).toLocaleString();
   };
 
-  const loadCustomers = async (token) => {
-    const response = await fetch(`${API_BASE_URL}/api/customers`, {
+  const formatShortDate = (value) => {
+    if (!value) {
+      return "-";
+    }
+
+    return new Date(value).toLocaleString("en-GB", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit"
+    });
+  };
+
+  const formatDurationLabel = (totalMinutes) => {
+    const safeMinutes = Math.max(0, Number(totalMinutes) || 0);
+    const hours = Math.floor(safeMinutes / 60);
+    const minutes = safeMinutes % 60;
+    return `${hours}h ${minutes}m`;
+  };
+
+  const loadCustomers = async (token, options = {}) => {
+    const params = new URLSearchParams({
+      page: String(options.page || 1),
+      limit: String(options.limit || pageSize),
+      search: options.search ?? "",
+      filter: options.filter ?? "all",
+      startDate: options.startDate ?? "",
+      endDate: options.endDate ?? ""
+    });
+    const response = await fetch(`${API_BASE_URL}/api/customers?${params.toString()}`, {
       headers: {
         Authorization: `Bearer ${token}`
       }
@@ -286,6 +494,12 @@ function App() {
     }
 
     setCustomers(data.customers);
+    setCustomerMeta({
+      page: data.page,
+      totalPages: data.totalPages,
+      totalCount: data.totalCount
+    });
+    setCustomerSummary(data.summary || initialCustomerSummary);
   };
 
   const loadSettings = async (token) => {
@@ -389,7 +603,12 @@ function App() {
         setAdminName(parsed.adminName);
         setSystemName(parsed.systemName || "Gaming Zone");
         setLastLoginAt(parsed.lastLoginAt || "");
-        await loadCustomers(parsed.token);
+        await loadCustomers(parsed.token, {
+          page: 1,
+          limit: pageSize,
+          search: "",
+          filter: "all"
+        });
         await loadSettings(parsed.token);
         setStatus({
           type: "success",
@@ -412,8 +631,18 @@ function App() {
   }, [entryToken]);
 
   useEffect(() => {
+    if (currentView !== "customers") {
+      return;
+    }
+
     setCurrentPage(1);
-  }, [customerFilter, statusFilter, currentView]);
+  }, [customerFilter, statusFilter, startDateFilter, endDateFilter]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
 
   useEffect(() => {
     if (!authToken) {
@@ -421,11 +650,24 @@ function App() {
     }
 
     const intervalId = window.setInterval(() => {
-      setTimeTick(Date.now());
+      const now = Date.now();
+      setTimeTick(now);
+
+      // fire times-up notification for any session that just expired
+      customers.forEach((customer) => {
+        if (!customer.sessionStartedAt || !customer.totalBookedMinutes || customer.timesUpNotifiedAt) return;
+        const elapsed = Math.floor((now - new Date(customer.sessionStartedAt).getTime()) / 60000);
+        if (elapsed >= customer.totalBookedMinutes) {
+          fetch(`${API_BASE_URL}/api/customers/${customer._id}/notify-timesup`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${authToken}` }
+          }).catch(() => {});
+        }
+      });
     }, 30000);
 
     return () => window.clearInterval(intervalId);
-  }, [authToken]);
+  }, [authToken, customers]);
 
   useEffect(() => {
     if (!authToken) {
@@ -434,7 +676,14 @@ function App() {
 
     const intervalId = window.setInterval(async () => {
       try {
-        await loadCustomers(authToken);
+        await loadCustomers(authToken, {
+          page: currentView === "customers" ? currentPage : 1,
+          limit: pageSize,
+          search: currentView === "customers" ? customerFilter : "",
+          filter: currentView === "customers" ? statusFilter : "all",
+          startDate: currentView === "customers" ? startDateFilter : "",
+          endDate: currentView === "customers" ? endDateFilter : ""
+        });
       } catch (error) {
         setStatus((current) =>
           current.type === "error"
@@ -448,7 +697,27 @@ function App() {
     }, 60000);
 
     return () => window.clearInterval(intervalId);
-  }, [authToken]);
+  }, [authToken, currentView, currentPage, customerFilter, statusFilter, startDateFilter, endDateFilter]);
+
+  useEffect(() => {
+    if (!authToken || currentView !== "customers") {
+      return;
+    }
+
+    loadCustomers(authToken, {
+      page: currentPage,
+      limit: pageSize,
+      search: customerFilter,
+      filter: statusFilter,
+      startDate: startDateFilter,
+      endDate: endDateFilter
+    }).catch((error) => {
+      setStatus({
+        type: "error",
+        message: error.message
+      });
+    });
+  }, [authToken, currentView, currentPage, customerFilter, statusFilter, startDateFilter, endDateFilter]);
 
   useEffect(() => {
     if (!authToken) {
@@ -526,21 +795,30 @@ function App() {
     checkEntry();
   }, [entryToken]);
 
+  useEffect(() => () => stopPublicCamera(), []);
+
+  // listen for foreground FCM messages — show system notification even when tab is open
+  useEffect(() => {
+    const unsubscribe = onForegroundMessage(({ title, body, data }) => {
+      if (Notification.permission === "granted") {
+        new Notification(title, { body, icon: "/vite.svg", data });
+      } else {
+        setStatus({ type: "success", message: `🔔 ${title}: ${body}` });
+      }
+    });
+    return unsubscribe;
+  }, []);
+
   const handleSubmit = async (event) => {
     event.preventDefault();
 
     try {
       setLoading(true);
-      setStatus({
-        type: "",
-        message: "Authenticating..."
-      });
+      setStatus({ type: "", message: "Authenticating..." });
 
       const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(formData)
       });
 
@@ -563,20 +841,58 @@ function App() {
           lastLoginAt: data.user.lastLoginAt
         })
       );
-      await loadCustomers(data.token);
+      await loadCustomers(data.token, {
+        page: 1,
+        limit: pageSize,
+        search: "",
+        filter: "all"
+      });
       await loadSettings(data.token);
+
+      // silently register FCM token in background — no UI feedback
+      requestFcmToken(data.token)
+        .then((fcmToken) =>
+          fetch(`${API_BASE_URL}/api/auth/fcm-token`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.token}` },
+            body: JSON.stringify({ fcmToken })
+          })
+        )
+        .catch(() => {});
+
+      loadNotifications(data.token);
+
       setStatus({
         type: "success",
         message: `Welcome back, ${data.user.gamerTag}. Session saved for 1 day.`
       });
     } catch (error) {
-      setStatus({
-        type: "error",
-        message: error.message
-      });
+      setStatus({ type: "error", message: error.message });
     } finally {
       setLoading(false);
     }
+  };
+
+  const loadNotifications = async (token) => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/notifications`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setNotifications(data.notifications);
+      setUnreadCount(data.unreadCount);
+    } catch {}
+  };
+
+  const handleOpenNotifications = async () => {
+    await loadNotifications(authToken);
+    setCurrentView("notifications");
+    // mark all read after opening
+    fetch(`${API_BASE_URL}/api/notifications/read-all`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${authToken}` }
+    }).then(() => setUnreadCount(0)).catch(() => {});
   };
 
   const handleOpenSettings = async () => {
@@ -643,8 +959,10 @@ function App() {
         message: "Saving customer..."
       });
 
-      const response = await fetch(`${API_BASE_URL}/api/customers`, {
-        method: "POST",
+      const response = await fetch(
+        editingCustomerId ? `${API_BASE_URL}/api/customers/${editingCustomerId}` : `${API_BASE_URL}/api/customers`,
+        {
+          method: editingCustomerId ? "PUT" : "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${authToken}`
@@ -654,11 +972,16 @@ function App() {
           phoneNumber: customerForm.phoneNumber,
           email: customerForm.email,
           photoUrl: customerForm.photoUrl,
+          photoFit: customerForm.photoFit,
+          photoPositionX: customerForm.photoPositionX,
+          photoPositionY: customerForm.photoPositionY,
+          photoZoom: customerForm.photoZoom,
           pendingHours: customerForm.pendingHours,
           pendingMinutes: customerForm.pendingMinutes,
           hourlyRate: customerForm.hourlyRate
         })
-      });
+        }
+      );
 
       const data = await response.json();
 
@@ -670,12 +993,20 @@ function App() {
         throw new Error(data.message || "Unable to save customer.");
       }
 
-      setCustomers((current) => [data.customer, ...current]);
+      await loadCustomers(authToken, {
+        page: currentView === "customers" ? currentPage : 1,
+        limit: pageSize,
+        search: currentView === "customers" ? customerFilter : "",
+        filter: currentView === "customers" ? statusFilter : "all",
+        startDate: currentView === "customers" ? startDateFilter : "",
+        endDate: currentView === "customers" ? endDateFilter : ""
+      });
       setCustomerForm(initialCustomerForm);
       setShowCustomerModal(false);
+      setEditingCustomerId("");
       setStatus({
         type: "success",
-        message: `${data.customer.customerName} added successfully.`
+        message: editingCustomerId ? "Customer updated successfully." : `${data.customer.customerName} added successfully.`
       });
     } catch (error) {
       setStatus({
@@ -707,6 +1038,10 @@ function App() {
           customerName: publicForm.customerName,
           phoneNumber: publicForm.phoneNumber,
           photoUrl: publicForm.photoUrl,
+          photoFit: publicForm.photoFit,
+          photoPositionX: publicForm.photoPositionX,
+          photoPositionY: publicForm.photoPositionY,
+          photoZoom: publicForm.photoZoom,
           pendingHours: publicForm.pendingHours,
           pendingMinutes: publicForm.pendingMinutes
         })
@@ -763,6 +1098,87 @@ function App() {
       setStatus({
         type: "success",
         message: data.message
+      });
+    } catch (error) {
+      setStatus({
+        type: "error",
+        message: error.message
+      });
+    }
+  };
+
+  const handleEditCustomer = (customer) => {
+    setEditingCustomerId(customer._id);
+    setCustomerForm({
+      customerName: customer.customerName || "",
+      phoneNumber: customer.phoneNumber || "",
+      email: customer.email || "",
+      photoUrl: customer.photoUrl || "",
+      photoFit: customer.photoFit || "cover",
+      photoPositionX: Number(customer.photoPositionX ?? 50),
+      photoPositionY: Number(customer.photoPositionY ?? 50),
+      photoZoom: Number(customer.photoZoom ?? 1),
+      pendingHours: String(customer.bookedHours ?? customer.pendingHours ?? 0),
+      pendingMinutes: String(customer.bookedMinutes ?? customer.pendingMinutes ?? 0),
+      hourlyRate: String(customer.hourlyRate ?? 100)
+    });
+    setShowCustomerModal(true);
+  };
+
+  const handleOpenNewCustomerModal = () => {
+    setEditingCustomerId("");
+    setCustomerForm(initialCustomerForm);
+    setShowCustomerModal(true);
+  };
+
+  const handleExportCustomers = async () => {
+    try {
+      setStatus({
+        type: "",
+        message: "Preparing Excel..."
+      });
+
+      const params = new URLSearchParams({
+        search: customerFilter,
+        filter: statusFilter,
+        startDate: startDateFilter,
+        endDate: endDateFilter
+      });
+      const response = await fetch(`${API_BASE_URL}/api/customers/export?${params.toString()}`, {
+        headers: {
+          Authorization: `Bearer ${authToken}`
+        }
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.message || "Unable to export customers.");
+      }
+
+      const rows = data.customers.map((customer) => ({
+        Name: customer.customerName,
+        Phone: customer.phoneNumber,
+        "Added Date": formatShortDate(customer.createdAt),
+        "Booked Time": formatDurationLabel(customer.totalBookedMinutes ?? customer.totalPendingMinutes),
+        "Time Spent": formatDurationLabel(customer.spentTotalMinutes),
+        "Time Left": customer.sessionExpired
+          ? "Times up"
+          : customer.sessionPending
+            ? "Not started"
+            : formatDurationLabel(customer.remainingTotalMinutes),
+        Status: customer.sessionExpired ? "Times up" : customer.sessionActive ? "Active" : "Pending",
+        "Hourly Rate": customer.hourlyRate,
+        Amount: customer.pendingCost
+      }));
+
+      const workbook = XLSX.utils.book_new();
+      const worksheet = XLSX.utils.json_to_sheet(rows);
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Customers");
+      XLSX.writeFile(workbook, `customers-${new Date().toISOString().slice(0, 10)}.xlsx`);
+
+      setStatus({
+        type: "success",
+        message: `Excel downloaded with ${rows.length} entries.`
       });
     } catch (error) {
       setStatus({
@@ -873,12 +1289,75 @@ function App() {
                 />
               </label>
 
-              <label>
-                Photo
-                <input name="photo" type="file" accept="image/*" capture="environment" onChange={handlePublicPhotoChange} />
-              </label>
+              <div className="photo-upload-block">
+                <span className="photo-upload-label">Photo</span>
+                <div className="photo-upload-actions">
+                  <label className="ghost-button photo-upload-button">
+                    {publicForm.photoUrl ? "Change Photo" : "Upload Photo"}
+                    <input
+                      className="sr-only-file-input"
+                      name="photo"
+                      type="file"
+                      accept="image/*"
+                      capture="user"
+                      onChange={handlePublicPhotoChange}
+                    />
+                  </label>
+                  {publicForm.photoUrl ? (
+                    <button type="button" className="ghost-button" onClick={handleClearPublicPhoto}>
+                      Remove
+                    </button>
+                  ) : null}
+                </div>
+              </div>
 
-              {publicForm.photoUrl ? <img className="photo-preview" src={publicForm.photoUrl} alt="Customer preview" /> : null}
+              <div className="camera-actions">
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={openPublicCamera}
+                  disabled={publicCameraLoading}
+                >
+                  {publicCameraLoading ? "Opening Camera..." : "Take Face Photo"}
+                </button>
+                {publicCameraOpen ? (
+                  <button type="button" className="ghost-button" onClick={stopPublicCamera}>
+                    Close Camera
+                  </button>
+                ) : null}
+              </div>
+
+              {publicCameraOpen ? (
+                <div className="camera-card">
+                  <video ref={videoRef} className="camera-preview" autoPlay playsInline muted />
+                  <button type="button" className="primary-button" onClick={capturePublicPhoto}>
+                    Capture Photo
+                  </button>
+                </div>
+              ) : null}
+
+              {publicForm.photoUrl ? (
+                <>
+                  <button
+                    type="button"
+                    className="photo-preview-card photo-preview-button"
+                    onClick={() => setPhotoAdjustTarget("public")}
+                  >
+                    <img
+                      className={`photo-preview ${publicForm.photoFit === "contain" ? "photo-preview-fit" : ""}`}
+                      src={publicForm.photoUrl}
+                      alt="Customer preview"
+                      style={getPhotoStyle(
+                        publicForm.photoFit,
+                        publicForm.photoPositionX,
+                        publicForm.photoPositionY,
+                        publicForm.photoZoom
+                      )}
+                    />
+                  </button>
+                  <p className="field-hint">Click image to adjust inside popup.</p>
+                </>
+              ) : null}
 
               <div className="time-grid">
                 <label>
@@ -951,6 +1430,17 @@ function App() {
             </button>
             <button
               type="button"
+              className={`sidebar-link ${currentView === "notifications" ? "active-link" : ""}`}
+              onClick={handleOpenNotifications}
+            >
+              <span className="sidebar-icon">🔔</span>
+              <span className="sidebar-notif-label">
+                Notifications
+                {unreadCount > 0 && <span className="notif-badge">{unreadCount}</span>}
+              </span>
+            </button>
+            <button
+              type="button"
               className={`sidebar-link ${currentView === "settings" ? "active-link" : ""}`}
               onClick={handleOpenSettings}
               disabled={settingsLoading}
@@ -966,6 +1456,53 @@ function App() {
             </button>
           </div>
         </aside>
+
+        {/* ── mobile bottom navigation bar (hidden on ≥481px via CSS) ── */}
+        <nav className="mobile-nav">
+          <button
+            type="button"
+            className={`mobile-nav-btn ${currentView === "home" ? "mobile-nav-active" : ""}`}
+            onClick={() => setCurrentView("home")}
+          >
+            <span className="mobile-nav-icon">⌂</span>
+            <span className="mobile-nav-label">Home</span>
+          </button>
+          <button
+            type="button"
+            className={`mobile-nav-btn ${currentView === "customers" ? "mobile-nav-active" : ""}`}
+            onClick={() => setCurrentView("customers")}
+          >
+            <span className="mobile-nav-icon">☰</span>
+            <span className="mobile-nav-label">Customers</span>
+          </button>
+          <button
+            type="button"
+            className={`mobile-nav-btn ${currentView === "notifications" ? "mobile-nav-active" : ""}`}
+            onClick={handleOpenNotifications}
+          >
+            <span className="mobile-nav-icon">
+              🔔{unreadCount > 0 && <span className="notif-badge">{unreadCount}</span>}
+            </span>
+            <span className="mobile-nav-label">Alerts</span>
+          </button>
+          <button
+            type="button"
+            className={`mobile-nav-btn ${currentView === "settings" ? "mobile-nav-active" : ""}`}
+            onClick={handleOpenSettings}
+            disabled={settingsLoading}
+          >
+            <span className="mobile-nav-icon">⚙</span>
+            <span className="mobile-nav-label">Settings</span>
+          </button>
+          <button
+            type="button"
+            className="mobile-nav-btn mobile-nav-logout"
+            onClick={() => logout("Logged out successfully.")}
+          >
+            <span className="mobile-nav-icon">⏻</span>
+            <span className="mobile-nav-label">Logout</span>
+          </button>
+        </nav>
 
         <section className="dashboard-main">
           {currentView === "home" ? (
@@ -1068,25 +1605,51 @@ function App() {
                     />
                   </div>
 
-                  <select
-                    className="toolbar-select"
-                    value={statusFilter}
-                    onChange={(event) => setStatusFilter(event.target.value)}
-                  >
-                    <option value="all">All Customers</option>
-                    <option value="with-email">With Email</option>
-                    <option value="high-pending">High Pending</option>
-                  </select>
+                  <div className="toolbar-date-range">
+                    <input
+                      type="date"
+                      value={startDateFilter}
+                      onChange={(event) => setStartDateFilter(event.target.value)}
+                    />
+                    <span className="toolbar-date-sep">→</span>
+                    <input
+                      type="date"
+                      value={endDateFilter}
+                      onChange={(event) => setEndDateFilter(event.target.value)}
+                    />
+                  </div>
 
-                  <button type="button" className="primary-button" onClick={() => setShowCustomerModal(true)}>
-                    Add Customer
+                  {(customerFilter || startDateFilter || endDateFilter) ? (
+                    <button
+                      type="button"
+                      className="ghost-button toolbar-clear-btn"
+                      onClick={() => {
+                        setCustomerFilter("");
+                        setStartDateFilter("");
+                        setEndDateFilter("");
+                        setStatusFilter("all");
+                      }}
+                    >
+                      ✕ Clear
+                    </button>
+                  ) : null}
+
+                  <button type="button" className="primary-button" onClick={handleOpenNewCustomerModal}>
+                    + Add Customer
+                  </button>
+
+                  <button type="button" className="ghost-button" onClick={handleExportCustomers}>
+                    Download Excel
                   </button>
                 </div>
               </section>
 
               <section className="table-card">
                 <div className="table-heading">
-                  <h2>Customer List</h2>
+                  <div>
+                    <h2>Customer List</h2>
+                    <p className="table-count-copy">{customerMeta.totalCount} entries</p>
+                  </div>
                   <p className={`status-message ${status.type}`}>{status.message}</p>
                 </div>
 
@@ -1094,6 +1657,7 @@ function App() {
                   <div className="table-row table-head">
                     <span>Client</span>
                     <span>Phone</span>
+                    <span>Added Date</span>
                     <span>Pending Time</span>
                     <span>Time Left</span>
                     <span>Status</span>
@@ -1102,24 +1666,47 @@ function App() {
                     <span>Action</span>
                   </div>
 
-                  {filteredCustomers.length === 0 ? (
+                  {liveCustomers.length === 0 ? (
                     <div className="empty-table">No customers found.</div>
                   ) : (
-                    paginatedCustomers.map((customer) => (
+                    liveCustomers.map((customer) => (
                       <div className="table-row customer-table-row" key={customer._id}>
                         <span className="client-cell">
+                          {customer.photoUrl ? (
+                            <span className="client-avatar-frame">
+                              <img
+                                className={`client-avatar ${customer.photoFit === "contain" ? "client-avatar-fit" : ""}`}
+                                src={customer.photoUrl}
+                                alt={customer.customerName}
+                                style={getPhotoStyle(
+                                  customer.photoFit,
+                                  customer.photoPositionX,
+                                  customer.photoPositionY,
+                                  customer.photoZoom
+                                )}
+                              />
+                            </span>
+                          ) : (
+                            <span className="client-avatar-frame client-avatar-fallback">
+                              {getCustomerInitials(customer.customerName)}
+                            </span>
+                          )}
                           <strong>{customer.customerName}</strong>
                         </span>
                         <span>{customer.phoneNumber}</span>
+                        <span>{formatShortDate(customer.createdAt)}</span>
                         <span>
                           {customer.bookedHours ?? customer.pendingHours}h {customer.bookedMinutes ?? customer.pendingMinutes}m
                         </span>
                         <span className={customer.sessionExpired ? "time-status time-status-expired" : "time-status"}>
-                          {customer.sessionExpired
-                            ? "Times up"
-                            : customer.sessionPending
-                              ? "Not started"
-                              : `${customer.remainingHours ?? customer.pendingHours}h ${customer.remainingMinutes ?? customer.pendingMinutes}m left`}
+                          {customer.sessionExpired ? (
+                            <>
+                              <span className="timesup-bell" title="Time's up notification sent">🔔</span>
+                              {" "}Times up
+                            </>
+                          ) : customer.sessionPending
+                            ? "Not started"
+                            : `${customer.remainingHours ?? customer.pendingHours}h ${customer.remainingMinutes ?? customer.pendingMinutes}m left`}
                         </span>
                         <span>
                           <span
@@ -1138,17 +1725,49 @@ function App() {
                         <span className="amount-cell">INR {customer.pendingCost}</span>
                         <span>
                           {customer.sessionPending ? (
-                            <button
-                              type="button"
-                              className="table-action-button"
-                              onClick={() => handleActivateCustomer(customer._id)}
-                            >
-                              Activate
-                            </button>
+                            <div className="table-action-group">
+                              <button
+                                type="button"
+                                className="table-action-button"
+                                onClick={() => handleActivateCustomer(customer._id)}
+                              >
+                                Activate
+                              </button>
+                              <button
+                                type="button"
+                                className="table-edit-button"
+                                onClick={() => handleEditCustomer(customer)}
+                              >
+                                Edit
+                              </button>
+                            </div>
                           ) : customer.sessionActive ? (
-                            <span className="table-action-label table-action-label-active">Running</span>
+                            <div className="table-action-group">
+                              <span
+                                className="table-action-label table-action-label-active"
+                                style={{ "--fill-percent": `${customer.progressPercent || 0}%` }}
+                              >
+                                Running
+                              </span>
+                              <button
+                                type="button"
+                                className="table-edit-button"
+                                onClick={() => handleEditCustomer(customer)}
+                              >
+                                Edit
+                              </button>
+                            </div>
                           ) : (
-                            <span className="table-action-label table-action-label-expired">Times up</span>
+                            <div className="table-action-group">
+                              <span className="table-action-label table-action-label-expired">Times up</span>
+                              <button
+                                type="button"
+                                className="table-edit-button"
+                                onClick={() => handleEditCustomer(customer)}
+                              >
+                                Edit
+                              </button>
+                            </div>
                           )}
                         </span>
                       </div>
@@ -1156,7 +1775,7 @@ function App() {
                   )}
                 </div>
 
-                {filteredCustomers.length > 0 ? (
+                {customerMeta.totalCount > 0 ? (
                   <div className="pagination-bar">
                     <p className="pagination-copy">
                       Page {safeCurrentPage} of {totalPages}
@@ -1274,20 +1893,58 @@ function App() {
               </form>
             </section>
           ) : null}
+
+          {currentView === "notifications" ? (
+            <section className="table-card settings-page">
+              <div className="table-heading">
+                <div>
+                  <p className="card-label">Alerts</p>
+                  <h2>Notifications</h2>
+                </div>
+              </div>
+              <div className="notif-list">
+                {notifications.length === 0 ? (
+                  <p className="notif-empty">No notifications yet.</p>
+                ) : (
+                  notifications.map((n) => (
+                    <div key={n._id} className={`notif-item ${n.isRead ? "notif-read" : "notif-unread"}`}>
+                      <span className="notif-icon">{n.type === "timesup" ? "⏰" : "🎮"}</span>
+                      <div className="notif-body">
+                        <p className="notif-title">{n.title}</p>
+                        <p className="notif-text">{n.body}</p>
+                        <p className="notif-time">{new Date(n.createdAt).toLocaleString("en-IN")}</p>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+          ) : null}
         </section>
 
         {showCustomerModal ? (
-          <div className="modal-backdrop" onClick={() => setShowCustomerModal(false)}>
+          <div
+            className="modal-backdrop"
+            onClick={() => {
+              setShowCustomerModal(false);
+              setEditingCustomerId("");
+              setCustomerForm(initialCustomerForm);
+            }}
+          >
             <div className="modal-card" onClick={(event) => event.stopPropagation()}>
               <div className="modal-header">
                 <div>
                   <p className="card-label">Add Customer</p>
-                  <h2>New entry</h2>
+                  <h2>{editingCustomerId ? "Edit customer" : "New entry"}</h2>
                 </div>
                 <button
                   type="button"
                   className="close-button"
-                  onClick={() => setShowCustomerModal(false)}
+                  onClick={() => {
+                    setShowCustomerModal(false);
+                    setEditingCustomerId("");
+                    setCustomerForm(initialCustomerForm);
+                  }}
                 >
                   Close
                 </button>
@@ -1327,13 +1984,48 @@ function App() {
                   />
                 </label>
 
-                <label>
-                  Photo
-                  <input name="photo" type="file" accept="image/*" onChange={handleCustomerPhotoChange} />
-                </label>
+                <div className="photo-upload-block">
+                  <span className="photo-upload-label">Photo</span>
+                  <div className="photo-upload-actions">
+                    <label className="ghost-button photo-upload-button">
+                      {customerForm.photoUrl ? "Change Photo" : "Upload Photo"}
+                      <input
+                        className="sr-only-file-input"
+                        name="photo"
+                        type="file"
+                        accept="image/*"
+                        onChange={handleCustomerPhotoChange}
+                      />
+                    </label>
+                    {customerForm.photoUrl ? (
+                      <button type="button" className="ghost-button" onClick={handleClearCustomerPhoto}>
+                        Remove
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
 
                 {customerForm.photoUrl ? (
-                  <img className="photo-preview" src={customerForm.photoUrl} alt="Customer preview" />
+                  <>
+                    <button
+                      type="button"
+                      className="photo-preview-card photo-preview-button"
+                      onClick={() => setPhotoAdjustTarget("customer")}
+                    >
+                      <img
+                        className={`photo-preview ${customerForm.photoFit === "contain" ? "photo-preview-fit" : ""}`}
+                        src={customerForm.photoUrl}
+                        alt="Customer preview"
+                        style={getPhotoStyle(
+                          customerForm.photoFit,
+                          customerForm.photoPositionX,
+                          customerForm.photoPositionY,
+                          customerForm.photoZoom
+                        )}
+                      />
+                    </button>
+                    <p className="field-hint">Click image to adjust inside popup.</p>
+                  </>
                 ) : null}
 
                 <div className="time-grid">
@@ -1364,7 +2056,9 @@ function App() {
                 </div>
 
                 <p className="field-hint">
-                  New customers stay pending first. Timer starts only when you click Activate in the customer list.
+                  {editingCustomerId
+                    ? "Update customer details and booked time here."
+                    : "New customers stay pending first. Timer starts only when you click Activate in the customer list."}
                 </p>
 
                 <label>
@@ -1380,9 +2074,127 @@ function App() {
                 </label>
 
                 <button type="submit" disabled={customerLoading}>
-                  {customerLoading ? "Saving..." : "Save Customer"}
+                  {customerLoading ? "Saving..." : editingCustomerId ? "Update Customer" : "Save Customer"}
                 </button>
               </form>
+            </div>
+          </div>
+        ) : null}
+
+        {photoAdjustTarget ? (
+          <div className="modal-backdrop" onClick={closePhotoAdjustModal}>
+            <div className="modal-card photo-adjust-modal" onClick={(event) => event.stopPropagation()}>
+              <div className="modal-header">
+                <div>
+                  <p className="card-label">Adjust Photo</p>
+                  <h2>Position Image</h2>
+                </div>
+                <button type="button" className="close-button" onClick={closePhotoAdjustModal}>
+                  Close
+                </button>
+              </div>
+
+              {photoAdjustTarget === "public" && publicForm.photoUrl ? (
+                <div className="photo-adjust-modal-body">
+                  <div className="photo-preview-card photo-preview-card-large">
+                    <img
+                      className={`photo-preview ${publicForm.photoFit === "contain" ? "photo-preview-fit" : ""}`}
+                      src={publicForm.photoUrl}
+                      alt="Customer preview"
+                      style={getPhotoStyle(
+                        publicForm.photoFit,
+                        publicForm.photoPositionX,
+                        publicForm.photoPositionY,
+                        publicForm.photoZoom
+                      )}
+                    />
+                  </div>
+                  <div className="photo-adjust-grid photo-adjust-grid-wide">
+                    <label>
+                      Move Left / Right
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        value={publicForm.photoPositionX}
+                        onChange={(event) => handlePublicPhotoAdjust("photoPositionX", event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      Move Up / Down
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        value={publicForm.photoPositionY}
+                        onChange={(event) => handlePublicPhotoAdjust("photoPositionY", event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      Zoom In / Out
+                      <input
+                        type="range"
+                        min="1"
+                        max="2.5"
+                        step="0.05"
+                        value={publicForm.photoZoom}
+                        onChange={(event) => handlePublicPhotoAdjust("photoZoom", event.target.value)}
+                      />
+                    </label>
+                  </div>
+                </div>
+              ) : null}
+
+              {photoAdjustTarget === "customer" && customerForm.photoUrl ? (
+                <div className="photo-adjust-modal-body">
+                  <div className="photo-preview-card photo-preview-card-large">
+                    <img
+                      className={`photo-preview ${customerForm.photoFit === "contain" ? "photo-preview-fit" : ""}`}
+                      src={customerForm.photoUrl}
+                      alt="Customer preview"
+                      style={getPhotoStyle(
+                        customerForm.photoFit,
+                        customerForm.photoPositionX,
+                        customerForm.photoPositionY,
+                        customerForm.photoZoom
+                      )}
+                    />
+                  </div>
+                  <div className="photo-adjust-grid photo-adjust-grid-wide">
+                    <label>
+                      Move Left / Right
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        value={customerForm.photoPositionX}
+                        onChange={(event) => handleCustomerPhotoAdjust("photoPositionX", event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      Move Up / Down
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        value={customerForm.photoPositionY}
+                        onChange={(event) => handleCustomerPhotoAdjust("photoPositionY", event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      Zoom In / Out
+                      <input
+                        type="range"
+                        min="1"
+                        max="2.5"
+                        step="0.05"
+                        value={customerForm.photoZoom}
+                        onChange={(event) => handleCustomerPhotoAdjust("photoZoom", event.target.value)}
+                      />
+                    </label>
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
         ) : null}
