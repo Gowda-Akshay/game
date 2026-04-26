@@ -42,7 +42,7 @@ export const sendPushNotification = async ({ token, title, body, data = {} }) =>
   const stringData = Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)]));
 
   try {
-    await messaging.send({
+    const msgId = await messaging.send({
       token,
       notification: { title, body },
       data: stringData,
@@ -57,8 +57,8 @@ export const sendPushNotification = async ({ token, title, body, data = {} }) =>
         fcmOptions: { link: "/" }
       }
     });
+    console.log("[Firebase] Push sent, message ID:", msgId);
   } catch (err) {
-    // Token may be stale — log but don't crash
     console.warn("[Firebase] Push failed:", err.message);
   }
 };

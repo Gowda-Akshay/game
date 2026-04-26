@@ -1647,7 +1647,7 @@ function App() {
               <section className="table-card">
                 <div className="table-heading">
                   <div>
-                    <h2>Customer List</h2>
+                    <h2>Customer List <button className="icon-btn" title="Refresh" onClick={() => loadCustomers(authToken, { page: currentPage, limit: pageSize, search: customerFilter, filter: statusFilter, startDate: startDateFilter, endDate: endDateFilter })}>↻</button></h2>
                     <p className="table-count-copy">{customerMeta.totalCount} entries</p>
                   </div>
                   <p className={`status-message ${status.type}`}>{status.message}</p>
