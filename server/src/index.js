@@ -7,6 +7,7 @@ import { connectDatabase } from "./config/db.js";
 import authRoutes from "./routes/auth.js";
 import customerRoutes from "./routes/customers.js";
 import notificationRoutes from "./routes/notifications.js";
+import gameRoutes from "./routes/games.js";
 import { ensureAdminUser } from "./seed/adminUser.js";
 import { startTimesUpNotifier } from "./jobs/timesUpNotifier.js";
 import { initFirebase } from "./config/firebase.js";
@@ -44,6 +45,7 @@ app.get("/api/health", (_req, res) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/customers", customerRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/games", gameRoutes);
 
 const startServer = async () => {
   try {

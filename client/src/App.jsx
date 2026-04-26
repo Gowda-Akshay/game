@@ -92,6 +92,7 @@ function App() {
   const pageSize = 20;
   const entryToken = useMemo(() => new URLSearchParams(window.location.search).get("entryToken") || "", []);
   const [currentView, setCurrentView] = useState("home");
+  const [toasts, setToasts] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
@@ -118,6 +119,9 @@ function App() {
   const [lastLoginAt, setLastLoginAt] = useState("");
   const [showCustomerModal, setShowCustomerModal] = useState(false);
   const [settingsData, setSettingsData] = useState(null);
+  const [games, setGames] = useState([]);
+  const [gameForm, setGameForm] = useState({ name: "", hourlyRate: "" });
+  const [gameLoading, setGameLoading] = useState(false);
   const [passwordForm, setPasswordForm] = useState(initialPasswordForm);
   const [status, setStatus] = useState({
     type: "",
@@ -519,6 +523,35 @@ function App() {
     setLastLoginAt(data.lastLoginAt);
   };
 
+  const loadGames = async (token) => {
+    const res = await fetch(`${API_BASE_URL}/api/games`, { headers: { Authorization: `Bearer ${token}` } });
+    const data = await res.json();
+    if (res.ok) setGames(data.games);
+  };
+
+  const handleAddGame = async () => {
+    if (!gameForm.name || !gameForm.hourlyRate) return;
+    setGameLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/games`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({ name: gameForm.name, hourlyRate: Number(gameForm.hourlyRate) })
+      });
+      if (res.ok) {
+        setGameForm({ name: "", hourlyRate: "" });
+        await loadGames(authToken);
+      }
+    } finally {
+      setGameLoading(false);
+    }
+  };
+
+  const handleDeleteGame = async (id) => {
+    await fetch(`${API_BASE_URL}/api/games/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${authToken}` } });
+    await loadGames(authToken);
+  };
+
   const loadEntryToken = async (token) => {
     const response = await fetch(`${API_BASE_URL}/api/auth/entry-link`, {
       method: "POST",
@@ -802,9 +835,10 @@ function App() {
     const unsubscribe = onForegroundMessage(({ title, body, data }) => {
       if (Notification.permission === "granted") {
         new Notification(title, { body, icon: "/vite.svg", data });
-      } else {
-        setStatus({ type: "success", message: `🔔 ${title}: ${body}` });
       }
+      const id = Date.now();
+      setToasts((prev) => [...prev, { id, title, body }]);
+      setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 10 * 60 * 1000);
     });
     return unsubscribe;
   }, []);
@@ -847,7 +881,7 @@ function App() {
         search: "",
         filter: "all"
       });
-      await loadSettings(data.token);
+      await Promise.all([loadSettings(data.token), loadGames(data.token)]);
 
       // silently register FCM token in background — no UI feedback
       requestFcmToken(data.token)
@@ -898,7 +932,7 @@ function App() {
   const handleOpenSettings = async () => {
     try {
       setSettingsLoading(true);
-      await loadSettings(authToken);
+      await Promise.all([loadSettings(authToken), loadGames(authToken)]);
       setCurrentView("settings");
     } catch (error) {
       setStatus({
@@ -1404,6 +1438,19 @@ function App() {
   if (authToken) {
     return (
       <main className="dashboard-shell">
+        {toasts.length > 0 && (
+          <div style={{ position: "fixed", bottom: "24px", right: "24px", zIndex: 9999, display: "flex", flexDirection: "column", gap: "10px", maxWidth: "300px" }}>
+            {toasts.map((t) => (
+              <div key={t.id} style={{ background: "#23233a", border: "1px solid #6c63ff55", borderLeft: "4px solid #6c63ff", borderRadius: "10px", padding: "12px 14px", boxShadow: "0 4px 24px rgba(0,0,0,0.5)", display: "flex", flexDirection: "column", gap: "4px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px" }}>
+                  <strong style={{ color: "#c9b8ff", fontSize: "0.95rem" }}>🔔 {t.title}</strong>
+                  <button onClick={() => setToasts((prev) => prev.filter((x) => x.id !== t.id))} style={{ background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: "1rem", lineHeight: 1, padding: 0 }}>✕</button>
+                </div>
+                <span style={{ fontSize: "0.85rem", color: "#ccc" }}>{t.body}</span>
+              </div>
+            ))}
+          </div>
+        )}
         <aside className="sidebar-card">
           <div className="sidebar-brand">
             <p className="card-label">Gaming Zone</p>
@@ -1894,6 +1941,62 @@ function App() {
             </section>
           ) : null}
 
+          {currentView === "settings" ? (
+            <section className="table-card settings-page">
+              <div className="table-heading">
+                <div>
+                  <p className="card-label">Master Data</p>
+                  <h2>Games & Rates</h2>
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: "10px", marginBottom: "18px", flexWrap: "wrap" }}>
+                <input
+                  className="input-field"
+                  placeholder="Game name"
+                  value={gameForm.name}
+                  onChange={(e) => setGameForm((f) => ({ ...f, name: e.target.value }))}
+                  style={{ flex: 1, minWidth: "140px" }}
+                />
+                <input
+                  className="input-field"
+                  placeholder="Hourly rate (₹)"
+                  type="number"
+                  min="0"
+                  value={gameForm.hourlyRate}
+                  onChange={(e) => setGameForm((f) => ({ ...f, hourlyRate: e.target.value }))}
+                  style={{ width: "160px" }}
+                />
+                <button className="primary-button" onClick={handleAddGame} disabled={gameLoading || !gameForm.name || !gameForm.hourlyRate}>
+                  {gameLoading ? "Adding..." : "+ Add Game"}
+                </button>
+              </div>
+              {games.length === 0 ? (
+                <p style={{ color: "#888", fontSize: "0.9rem" }}>No games added yet.</p>
+              ) : (
+                <table className="customer-table">
+                  <thead>
+                    <tr>
+                      <th>Game</th>
+                      <th>Hourly Rate</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {games.map((g) => (
+                      <tr key={g._id}>
+                        <td>{g.name}</td>
+                        <td>₹{g.hourlyRate}/hr</td>
+                        <td>
+                          <button className="danger-button" onClick={() => handleDeleteGame(g._id)}>Delete</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </section>
+          ) : null}
+
           {currentView === "notifications" ? (
             <section className="table-card settings-page">
               <div className="table-heading">
@@ -2060,6 +2163,24 @@ function App() {
                     ? "Update customer details and booked time here."
                     : "New customers stay pending first. Timer starts only when you click Activate in the customer list."}
                 </p>
+
+                {games.length > 0 && (
+                  <label>
+                    Select Game
+                    <select
+                      onChange={(e) => {
+                        const g = games.find((x) => x._id === e.target.value);
+                        if (g) setCustomerForm((f) => ({ ...f, hourlyRate: String(g.hourlyRate) }));
+                      }}
+                      defaultValue=""
+                    >
+                      <option value="">-- Pick a game --</option>
+                      {games.map((g) => (
+                        <option key={g._id} value={g._id}>{g.name} — ₹{g.hourlyRate}/hr</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
 
                 <label>
                   Cost Per Hour
