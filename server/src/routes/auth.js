@@ -6,6 +6,7 @@ import { User } from "../models/User.js";
 import { requireAuth } from "../middleware/auth.js";
 import { sendPushToAll } from "../config/firebase.js";
 import { Notification } from "../models/Notification.js";
+import Game from "../models/Game.js";
 
 const router = Router();
 const ONE_DAY_IN_MS = 24 * 60 * 60 * 1000;
@@ -289,11 +290,14 @@ router.get("/entry-link", async (req, res) => {
 
     await user.save();
 
+    const games = await Game.find({ isActive: { $ne: false } }).sort({ createdAt: -1 });
+
     return res.json({
       valid: true,
       systemName: process.env.SYSTEM_NAME || "Gaming Zone",
       expiresAt: new Date(payload.exp * 1000).toISOString(),
-      isActive: true
+      isActive: true,
+      games
     });
   } catch (error) {
     return res.status(401).json({ message: "This QR link has expired." });

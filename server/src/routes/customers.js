@@ -2,6 +2,7 @@ import { Router } from "express";
 import jwt from "jsonwebtoken";
 import { Customer } from "../models/Customer.js";
 import { User } from "../models/User.js";
+import Game from "../models/Game.js";
 import { requireAuth } from "../middleware/auth.js";
 import { sendPushToAll } from "../config/firebase.js";
 
@@ -31,6 +32,28 @@ const buildCustomerNumbers = ({ pendingHours, pendingMinutes, hourlyRate }) => {
     totalPendingMinutes,
     totalBookedMinutes: totalPendingMinutes,
     pendingCost
+  };
+};
+
+const resolveGameSelection = async ({ gameId, gameName, hourlyRate }) => {
+  if (!gameId) {
+    return {
+      gameId: null,
+      gameName: gameName?.trim() || "",
+      hourlyRate
+    };
+  }
+
+  const game = await Game.findById(gameId);
+
+  if (!game || game.isActive === false) {
+    return { error: "Selected game is not available." };
+  }
+
+  return {
+    gameId: game._id,
+    gameName: game.name,
+    hourlyRate: game.hourlyRate
   };
 };
 
@@ -143,9 +166,21 @@ const createCustomerRecord = async ({
   photoZoom = 1,
   pendingHours,
   pendingMinutes,
-  hourlyRate
+  hourlyRate,
+  gameId,
+  gameName
 }) => {
-  const customerNumbers = buildCustomerNumbers({ pendingHours, pendingMinutes, hourlyRate });
+  const gameSelection = await resolveGameSelection({ gameId, gameName, hourlyRate });
+
+  if (gameSelection.error) {
+    return { error: gameSelection.error };
+  }
+
+  const customerNumbers = buildCustomerNumbers({
+    pendingHours,
+    pendingMinutes,
+    hourlyRate: gameSelection.hourlyRate
+  });
 
   if (customerNumbers.error) {
     return { error: customerNumbers.error };
@@ -160,6 +195,8 @@ const createCustomerRecord = async ({
     photoPositionX: Math.min(100, Math.max(0, Number(photoPositionX) || 50)),
     photoPositionY: Math.min(100, Math.max(0, Number(photoPositionY) || 50)),
     photoZoom: Math.min(2.5, Math.max(1, Number(photoZoom) || 1)),
+    gameId: gameSelection.gameId,
+    gameName: gameSelection.gameName,
     sessionStartedAt: null,
     ...customerNumbers
   });
@@ -179,10 +216,22 @@ const updateCustomerRecord = async (customer, payload) => {
     photoZoom = 1,
     pendingHours,
     pendingMinutes,
-    hourlyRate
+    hourlyRate,
+    gameId,
+    gameName
   } = payload;
 
-  const customerNumbers = buildCustomerNumbers({ pendingHours, pendingMinutes, hourlyRate });
+  const gameSelection = await resolveGameSelection({ gameId, gameName, hourlyRate });
+
+  if (gameSelection.error) {
+    return { error: gameSelection.error };
+  }
+
+  const customerNumbers = buildCustomerNumbers({
+    pendingHours,
+    pendingMinutes,
+    hourlyRate: gameSelection.hourlyRate
+  });
 
   if (customerNumbers.error) {
     return { error: customerNumbers.error };
@@ -196,6 +245,8 @@ const updateCustomerRecord = async (customer, payload) => {
   customer.photoPositionX = Math.min(100, Math.max(0, Number(photoPositionX) || 50));
   customer.photoPositionY = Math.min(100, Math.max(0, Number(photoPositionY) || 50));
   customer.photoZoom = Math.min(2.5, Math.max(1, Number(photoZoom) || 1));
+  customer.gameId = gameSelection.gameId;
+  customer.gameName = gameSelection.gameName;
   customer.pendingHours = customerNumbers.pendingHours;
   customer.pendingMinutes = customerNumbers.pendingMinutes;
   customer.hourlyRate = customerNumbers.hourlyRate;
@@ -213,7 +264,7 @@ const updateCustomerRecord = async (customer, payload) => {
 
 router.post("/public", async (req, res) => {
   try {
-    const { token, customerName, phoneNumber, photoUrl, photoFit, photoPositionX, photoPositionY, photoZoom, pendingHours, pendingMinutes } = req.body;
+    const { token, customerName, phoneNumber, photoUrl, photoFit, photoPositionX, photoPositionY, photoZoom, pendingHours, pendingMinutes, gameId } = req.body;
 
     if (!token) {
       return res.status(400).json({ message: "Entry token is required." });
@@ -251,6 +302,7 @@ router.post("/public", async (req, res) => {
       photoZoom,
       pendingHours,
       pendingMinutes,
+      gameId,
       hourlyRate: Number(process.env.DEFAULT_HOURLY_RATE || 100)
     });
 
@@ -343,7 +395,7 @@ router.get("/export", async (req, res) => {
 
 router.put("/:customerId", async (req, res) => {
   try {
-    const { customerName, phoneNumber, email, photoUrl, photoFit, photoPositionX, photoPositionY, photoZoom, pendingHours, pendingMinutes, hourlyRate } = req.body;
+    const { customerName, phoneNumber, email, photoUrl, photoFit, photoPositionX, photoPositionY, photoZoom, pendingHours, pendingMinutes, hourlyRate, gameId, gameName } = req.body;
 
     if (!customerName?.trim() || !phoneNumber?.trim()) {
       return res.status(400).json({ message: "Customer name and phone number are required." });
@@ -366,7 +418,9 @@ router.put("/:customerId", async (req, res) => {
       photoZoom,
       pendingHours,
       pendingMinutes,
-      hourlyRate
+      hourlyRate,
+      gameId,
+      gameName
     });
 
     if (result.error) {
@@ -384,7 +438,7 @@ router.put("/:customerId", async (req, res) => {
 
 router.post("/", async (req, res) => {
   try {
-    const { customerName, phoneNumber, email, photoUrl, photoFit, photoPositionX, photoPositionY, photoZoom, pendingHours, pendingMinutes, hourlyRate } = req.body;
+    const { customerName, phoneNumber, email, photoUrl, photoFit, photoPositionX, photoPositionY, photoZoom, pendingHours, pendingMinutes, hourlyRate, gameId, gameName } = req.body;
 
     if (!customerName?.trim() || !phoneNumber?.trim()) {
       return res.status(400).json({ message: "Customer name and phone number are required." });
@@ -401,7 +455,9 @@ router.post("/", async (req, res) => {
       photoZoom,
       pendingHours,
       pendingMinutes,
-      hourlyRate
+      hourlyRate,
+      gameId,
+      gameName
     });
 
     if (result.error) {

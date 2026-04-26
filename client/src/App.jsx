@@ -26,6 +26,8 @@ const initialCustomerForm = {
   photoPositionX: 50,
   photoPositionY: 50,
   photoZoom: 1,
+  gameId: "",
+  gameName: "",
   pendingHours: "",
   pendingMinutes: "",
   hourlyRate: "100"
@@ -42,6 +44,8 @@ const initialPhoneCustomerForm = {
   photoPositionX: 50,
   photoPositionY: 50,
   photoZoom: 1,
+  gameId: "",
+  gameName: "",
   pendingHours: "",
   pendingMinutes: ""
 };
@@ -122,6 +126,8 @@ function App() {
   const [games, setGames] = useState([]);
   const [gameForm, setGameForm] = useState({ name: "", hourlyRate: "" });
   const [gameLoading, setGameLoading] = useState(false);
+  const [editingGame, setEditingGame] = useState(null);
+  const [deletingGame, setDeletingGame] = useState(null);
   const [passwordForm, setPasswordForm] = useState(initialPasswordForm);
   const [status, setStatus] = useState({
     type: "",
@@ -182,6 +188,25 @@ function App() {
     setPublicForm((current) => ({
       ...current,
       [name]: value
+    }));
+  };
+
+  const handlePublicGameChange = (event) => {
+    const game = publicEntryData?.games?.find((entryGame) => entryGame._id === event.target.value);
+    setPublicForm((current) => ({
+      ...current,
+      gameId: game?._id || "",
+      gameName: game?.name || ""
+    }));
+  };
+
+  const handleCustomerGameChange = (event) => {
+    const game = games.find((entryGame) => entryGame._id === event.target.value);
+    setCustomerForm((current) => ({
+      ...current,
+      gameId: game?._id || "",
+      gameName: game?.name || "",
+      hourlyRate: game ? String(game.hourlyRate) : current.hourlyRate
     }));
   };
 
@@ -547,9 +572,32 @@ function App() {
     }
   };
 
-  const handleDeleteGame = async (id) => {
-    await fetch(`${API_BASE_URL}/api/games/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${authToken}` } });
-    await loadGames(authToken);
+  const handleDeleteGame = async () => {
+    if (!deletingGame?._id) return;
+    setGameLoading(true);
+    try {
+      await fetch(`${API_BASE_URL}/api/games/${deletingGame._id}`, { method: "DELETE", headers: { Authorization: `Bearer ${authToken}` } });
+      setDeletingGame(null);
+      await loadGames(authToken);
+    } finally {
+      setGameLoading(false);
+    }
+  };
+
+  const handleUpdateGame = async () => {
+    if (!editingGame?.name || !editingGame?.hourlyRate) return;
+    setGameLoading(true);
+    try {
+      await fetch(`${API_BASE_URL}/api/games/${editingGame._id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({ name: editingGame.name, hourlyRate: Number(editingGame.hourlyRate) })
+      });
+      setEditingGame(null);
+      await loadGames(authToken);
+    } finally {
+      setGameLoading(false);
+    }
   };
 
   const loadEntryToken = async (token) => {
@@ -642,7 +690,7 @@ function App() {
           search: "",
           filter: "all"
         });
-        await loadSettings(parsed.token);
+        await Promise.all([loadSettings(parsed.token), loadGames(parsed.token)]);
         setStatus({
           type: "success",
           message: "Session restored."
@@ -1010,6 +1058,8 @@ function App() {
           photoPositionX: customerForm.photoPositionX,
           photoPositionY: customerForm.photoPositionY,
           photoZoom: customerForm.photoZoom,
+          gameId: customerForm.gameId,
+          gameName: customerForm.gameName,
           pendingHours: customerForm.pendingHours,
           pendingMinutes: customerForm.pendingMinutes,
           hourlyRate: customerForm.hourlyRate
@@ -1076,6 +1126,7 @@ function App() {
           photoPositionX: publicForm.photoPositionX,
           photoPositionY: publicForm.photoPositionY,
           photoZoom: publicForm.photoZoom,
+          gameId: publicForm.gameId,
           pendingHours: publicForm.pendingHours,
           pendingMinutes: publicForm.pendingMinutes
         })
@@ -1152,6 +1203,8 @@ function App() {
       photoPositionX: Number(customer.photoPositionX ?? 50),
       photoPositionY: Number(customer.photoPositionY ?? 50),
       photoZoom: Number(customer.photoZoom ?? 1),
+      gameId: customer.gameId || "",
+      gameName: customer.gameName || "",
       pendingHours: String(customer.bookedHours ?? customer.pendingHours ?? 0),
       pendingMinutes: String(customer.bookedMinutes ?? customer.pendingMinutes ?? 0),
       hourlyRate: String(customer.hourlyRate ?? 100)
@@ -1201,6 +1254,7 @@ function App() {
             ? "Not started"
             : formatDurationLabel(customer.remainingTotalMinutes),
         Status: customer.sessionExpired ? "Times up" : customer.sessionActive ? "Active" : "Pending",
+        Game: customer.gameName || "Custom",
         "Hourly Rate": customer.hourlyRate,
         Amount: customer.pendingCost
       }));
@@ -1420,6 +1474,26 @@ function App() {
                 </label>
               </div>
 
+              {publicEntryData?.games?.length > 0 ? (
+                <label>
+                  Select Game
+                  <select className="input-field" value={publicForm.gameId} onChange={handlePublicGameChange}>
+                    <option value="">Custom / default rate</option>
+                    {publicEntryData.games.map((game) => (
+                      <option key={game._id} value={game._id}>
+                        {game.name} - ₹{game.hourlyRate}/hr
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+
+              {publicForm.gameId ? (
+                <p className="field-hint">
+                  Selected game: {publicForm.gameName}
+                </p>
+              ) : null}
+
               <button type="submit" disabled={publicLoading || Boolean(publicStatus.type === "error" && !publicEntryData)}>
                 {publicLoading ? "Saving..." : "Add Customer"}
               </button>
@@ -1439,14 +1513,21 @@ function App() {
     return (
       <main className="dashboard-shell">
         {toasts.length > 0 && (
-          <div style={{ position: "fixed", bottom: "24px", right: "24px", zIndex: 9999, display: "flex", flexDirection: "column", gap: "10px", maxWidth: "300px" }}>
+          <div className="toast-stack">
             {toasts.map((t) => (
-              <div key={t.id} style={{ background: "#23233a", border: "1px solid #6c63ff55", borderLeft: "4px solid #6c63ff", borderRadius: "10px", padding: "12px 14px", boxShadow: "0 4px 24px rgba(0,0,0,0.5)", display: "flex", flexDirection: "column", gap: "4px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px" }}>
-                  <strong style={{ color: "#c9b8ff", fontSize: "0.95rem" }}>🔔 {t.title}</strong>
-                  <button onClick={() => setToasts((prev) => prev.filter((x) => x.id !== t.id))} style={{ background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: "1rem", lineHeight: 1, padding: 0 }}>✕</button>
+              <div key={t.id} className="toast-card">
+                <div className="toast-head">
+                  <strong>🔔 {t.title}</strong>
+                  <button
+                    type="button"
+                    className="toast-close"
+                    onClick={() => setToasts((prev) => prev.filter((x) => x.id !== t.id))}
+                    aria-label="Dismiss notification"
+                  >
+                    ✕
+                  </button>
                 </div>
-                <span style={{ fontSize: "0.85rem", color: "#ccc" }}>{t.body}</span>
+                <span>{t.body}</span>
               </div>
             ))}
           </div>
@@ -1554,6 +1635,24 @@ function App() {
         <section className="dashboard-main">
           {currentView === "home" ? (
             <>
+              <section className="home-hero">
+                <div className="home-hero-copy">
+                  <p className="card-label">Live Operations</p>
+                  <h1>{systemName}</h1>
+                  <p>
+                    Track customer sessions, collect pending amounts, and open phone entry from one clean control room.
+                  </p>
+                </div>
+                <div className="home-hero-actions">
+                  <button type="button" className="primary-button" onClick={handleOpenNewCustomerModal}>
+                    + Add Customer
+                  </button>
+                  <button type="button" className="ghost-button" onClick={() => setCurrentView("customers")}>
+                    View Customers
+                  </button>
+                </div>
+              </section>
+
               <section className="stats-grid stats-grid-top">
                 <article className="stat-card">
                   <p>Total clients</p>
@@ -1708,6 +1807,7 @@ function App() {
                     <span>Pending Time</span>
                     <span>Time Left</span>
                     <span>Status</span>
+                    <span>Game</span>
                     <span>Rate</span>
                     <span>Amount</span>
                     <span>Action</span>
@@ -1768,6 +1868,7 @@ function App() {
                             {customer.sessionExpired ? "Times up" : customer.sessionActive ? "Active" : "Pending"}
                           </span>
                         </span>
+                        <span>{customer.gameName || "Custom"}</span>
                         <span>INR {customer.hourlyRate}/hr</span>
                         <span className="amount-cell">INR {customer.pendingCost}</span>
                         <span>
@@ -1946,53 +2047,54 @@ function App() {
               <div className="table-heading">
                 <div>
                   <p className="card-label">Master Data</p>
-                  <h2>Games & Rates</h2>
+                  <h2>Games &amp; Rates</h2>
                 </div>
               </div>
-              <div style={{ display: "flex", gap: "10px", marginBottom: "18px", flexWrap: "wrap" }}>
+
+              <div className="games-add-row">
                 <input
                   className="input-field"
-                  placeholder="Game name"
+                  placeholder="Game name (e.g. PS5, Pool)"
                   value={gameForm.name}
                   onChange={(e) => setGameForm((f) => ({ ...f, name: e.target.value }))}
-                  style={{ flex: 1, minWidth: "140px" }}
                 />
-                <input
-                  className="input-field"
-                  placeholder="Hourly rate (₹)"
-                  type="number"
-                  min="0"
-                  value={gameForm.hourlyRate}
-                  onChange={(e) => setGameForm((f) => ({ ...f, hourlyRate: e.target.value }))}
-                  style={{ width: "160px" }}
-                />
+                <div className="games-rate-input">
+                  <span className="games-rate-prefix">₹</span>
+                  <input
+                    className="input-field"
+                    placeholder="Rate / hr"
+                    type="number"
+                    min="0"
+                    value={gameForm.hourlyRate}
+                    onChange={(e) => setGameForm((f) => ({ ...f, hourlyRate: e.target.value }))}
+                  />
+                </div>
                 <button className="primary-button" onClick={handleAddGame} disabled={gameLoading || !gameForm.name || !gameForm.hourlyRate}>
-                  {gameLoading ? "Adding..." : "+ Add Game"}
+                  {gameLoading ? "Adding…" : "+ Add"}
                 </button>
               </div>
+
               {games.length === 0 ? (
-                <p style={{ color: "#888", fontSize: "0.9rem" }}>No games added yet.</p>
+                <div className="games-empty">
+                  <span className="games-empty-icon">🎮</span>
+                  <p>No games added yet. Add your first game above.</p>
+                </div>
               ) : (
-                <table className="customer-table">
-                  <thead>
-                    <tr>
-                      <th>Game</th>
-                      <th>Hourly Rate</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {games.map((g) => (
-                      <tr key={g._id}>
-                        <td>{g.name}</td>
-                        <td>₹{g.hourlyRate}/hr</td>
-                        <td>
-                          <button className="danger-button" onClick={() => handleDeleteGame(g._id)}>Delete</button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <div className="games-grid">
+                  {games.map((g) => (
+                    <div key={g._id} className="game-card">
+                      <div className="game-card-icon">🎮</div>
+                      <div className="game-card-info">
+                        <span className="game-card-name">{g.name}</span>
+                        <span className="game-card-rate">₹{g.hourlyRate} / hr</span>
+                      </div>
+                      <div className="game-card-actions">
+                        <button className="game-card-edit" onClick={() => setEditingGame({ ...g, hourlyRate: String(g.hourlyRate) })} title="Edit">✎</button>
+                        <button className="game-card-delete" onClick={() => setDeletingGame(g)} title="Delete">✕</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               )}
             </section>
           ) : null}
@@ -2024,6 +2126,103 @@ function App() {
             </section>
           ) : null}
         </section>
+
+        {editingGame ? (
+          <div className="modal-backdrop" onClick={() => setEditingGame(null)}>
+            <div className="modal-card game-edit-modal" onClick={(event) => event.stopPropagation()}>
+              <div className="modal-header">
+                <div>
+                  <p className="card-label">Game Rate</p>
+                  <h2>Edit game</h2>
+                </div>
+                <button type="button" className="close-button" onClick={() => setEditingGame(null)}>
+                  Close
+                </button>
+              </div>
+
+              <div className="game-edit-preview">
+                <span className="game-card-icon">🎮</span>
+                <div>
+                  <strong>{editingGame.name || "Game"}</strong>
+                  <span>₹{editingGame.hourlyRate || 0} / hr</span>
+                </div>
+              </div>
+
+              <div className="login-form game-edit-form">
+                <label>
+                  Game Name
+                  <input
+                    className="input-field"
+                    value={editingGame.name}
+                    onChange={(e) => setEditingGame((x) => ({ ...x, name: e.target.value }))}
+                    placeholder="Game name"
+                  />
+                </label>
+                <label>
+                  Rate Per Hour
+                  <input
+                    className="input-field"
+                    type="number"
+                    min="0"
+                    value={editingGame.hourlyRate}
+                    onChange={(e) => setEditingGame((x) => ({ ...x, hourlyRate: e.target.value }))}
+                    placeholder="Rate/hr"
+                  />
+                </label>
+                <div className="game-edit-modal-actions">
+                  <button type="button" className="ghost-button" onClick={() => setEditingGame(null)}>
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={handleUpdateGame}
+                    disabled={gameLoading || !editingGame.name || !editingGame.hourlyRate}
+                  >
+                    {gameLoading ? "Updating..." : "Update Game"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {deletingGame ? (
+          <div className="modal-backdrop" onClick={() => setDeletingGame(null)}>
+            <div className="modal-card game-delete-modal" onClick={(event) => event.stopPropagation()}>
+              <div className="modal-header">
+                <div>
+                  <p className="card-label">Delete Game</p>
+                  <h2>Confirm delete</h2>
+                </div>
+                <button type="button" className="close-button" onClick={() => setDeletingGame(null)}>
+                  Close
+                </button>
+              </div>
+
+              <div className="game-edit-preview game-delete-preview">
+                <span className="game-card-icon">🎮</span>
+                <div>
+                  <strong>{deletingGame.name}</strong>
+                  <span>₹{deletingGame.hourlyRate} / hr</span>
+                </div>
+              </div>
+
+              <p className="delete-confirm-copy">
+                This game will be removed from Games & Rates. Customer records already saved will stay unchanged.
+              </p>
+
+              <div className="game-edit-modal-actions">
+                <button type="button" className="ghost-button" onClick={() => setDeletingGame(null)}>
+                  Cancel
+                </button>
+                <button type="button" className="danger-button" onClick={handleDeleteGame} disabled={gameLoading}>
+                  {gameLoading ? "Deleting..." : "Delete Game"}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         {showCustomerModal ? (
           <div
@@ -2168,15 +2367,13 @@ function App() {
                   <label>
                     Select Game
                     <select
-                      onChange={(e) => {
-                        const g = games.find((x) => x._id === e.target.value);
-                        if (g) setCustomerForm((f) => ({ ...f, hourlyRate: String(g.hourlyRate) }));
-                      }}
-                      defaultValue=""
+                      className="input-field"
+                      value={customerForm.gameId}
+                      onChange={handleCustomerGameChange}
                     >
-                      <option value="">-- Pick a game --</option>
+                      <option value="">Custom rate</option>
                       {games.map((g) => (
-                        <option key={g._id} value={g._id}>{g.name} — ₹{g.hourlyRate}/hr</option>
+                        <option key={g._id} value={g._id}>{g.name} - ₹{g.hourlyRate}/hr</option>
                       ))}
                     </select>
                   </label>

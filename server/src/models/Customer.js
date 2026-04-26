@@ -63,6 +63,16 @@ const customerSchema = new mongoose.Schema(
       required: true,
       min: 0
     },
+    gameId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Game",
+      default: null
+    },
+    gameName: {
+      type: String,
+      trim: true,
+      default: ""
+    },
     totalPendingMinutes: {
       type: Number,
       required: true,
