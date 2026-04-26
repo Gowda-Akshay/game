@@ -9,6 +9,7 @@ import customerRoutes from "./routes/customers.js";
 import notificationRoutes from "./routes/notifications.js";
 import { ensureAdminUser } from "./seed/adminUser.js";
 import { startTimesUpNotifier } from "./jobs/timesUpNotifier.js";
+import { initFirebase } from "./config/firebase.js";
 
 const app = express();
 const port = process.env.PORT || 5001;
@@ -16,7 +17,7 @@ const allowedOrigins = (process.env.CLIENT_URL || "http://localhost:5173")
   .split(",")
   .map((value) => value.trim())
   .filter(Boolean);
-
+  
 app.use(
   cors({
     origin(origin, callback) {
@@ -51,6 +52,7 @@ const startServer = async () => {
     const adminUser = await ensureAdminUser();
     console.log(`Admin login ready for ${adminUser.gamerTag}`);
     startTimesUpNotifier();
+    initFirebase();
     app.listen(port, () => {
       console.log(`Server running on http://localhost:${port}`);
     });
