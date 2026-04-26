@@ -1,4 +1,6 @@
 import dotenv from "dotenv";
+dotenv.config();
+
 import express from "express";
 import cors from "cors";
 import { connectDatabase } from "./config/db.js";
@@ -7,8 +9,6 @@ import customerRoutes from "./routes/customers.js";
 import notificationRoutes from "./routes/notifications.js";
 import { ensureAdminUser } from "./seed/adminUser.js";
 import { startTimesUpNotifier } from "./jobs/timesUpNotifier.js";
-
-dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 5001;
